@@ -95,6 +95,28 @@ where
         msm_specific::<E::G1Affine>(&scalars, &params.g_lagrange[0..size])
     }
 
+    fn commit_gpu(
+        params: &Self::Parameters,
+        poly: &crate::GpuVec,
+    ) -> Self::Commitment {
+        let size = poly.len();
+        assert!(params.g.len() >= size);
+        let bases: &[E::G1] = &params.g[..size];        
+        let proj: E::G1 = crate::msm_gpu::<E::G1Affine>(bases, &poly);
+        proj
+    }
+
+    fn commit_lagrang_gpu(
+        params: &Self::Parameters,
+        poly: &crate::GpuVec,
+    ) -> E::G1 {
+        let size = poly.len();
+        assert!(params.g_lagrange.len() >= size);     
+        let bases: &[E::G1] = &params.g_lagrange[..size];
+        let proj: E::G1 = crate::msm_gpu_lagrange::<E::G1Affine>(bases, &poly);
+        proj
+    }
+
     fn multi_open<T: Transcript>(
         params: &Self::Parameters,
         prover_query: &[ProverQuery<E::Fr>],
@@ -148,7 +170,12 @@ where
             inner_product(&f_polys, powers(x2))
         };
 
-        let f_com = Self::commit(params, &f_poly);
+        //let f_com = Self::commit(params, &f_poly);
+        let mut poly_gpu = crate::DeviceMemPool::allocate::<E::Fr>(f_poly.len()); 
+        crate::DeviceMemPool::mem_copy_htod(&mut poly_gpu, &f_poly.values);     
+        let f_com = Self::commit_gpu(params, &poly_gpu);
+        crate::DeviceMemPool::deallocate(poly_gpu);
+
         transcript.write(&f_com).map_err(|_| Error::OpeningError)?;
 
         let x3: E::Fr = transcript.squeeze_challenge();

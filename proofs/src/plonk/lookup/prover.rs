@@ -114,8 +114,19 @@ impl<F: WithSmallOrderMulGroup<3> + Ord + Hash> Argument<F> {
 
         // Closure to construct commitment to vector of values
         let commit_values = |values: &Polynomial<F, LagrangeCoeff>| {
-            let poly = pk.vk.domain.lagrange_to_coeff(values.clone());
-            let commitment = CS::commit_lagrange(params, values);
+            //let poly = pk.vk.domain.lagrange_to_coeff(values.clone());
+            let mut poly = domain.empty_coeff();
+            let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(values.values.len()); 
+            crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &values.values);
+            crate::gpu_lagrange_to_coeff::<F>(&mut gpu_poly);        
+            crate::DeviceMemPool::mem_copy_dtoh(&mut poly.values, &gpu_poly); 
+            crate::DeviceMemPool::deallocate(gpu_poly);
+
+            //let commitment = CS::commit_lagrange(params, values);
+            let mut poly_gpu = crate::DeviceMemPool::allocate::<F>(values.len()); 
+            crate::DeviceMemPool::mem_copy_htod(&mut poly_gpu, &values.values);     
+            let commitment = CS::commit_lagrang_gpu(params, &poly_gpu);
+            crate::DeviceMemPool::deallocate(poly_gpu);
             (poly, commitment)
         };
 
@@ -165,6 +176,7 @@ impl<F: WithSmallOrderMulGroup<3>> Permuted<F> {
         CS::Commitment: Hashable<T::Hash>,
     {
         let blinding_factors = pk.vk.cs.blinding_factors();
+        /*
         // Goal is to compute the products of fractions
         //
         // Numerator: (\theta^{m-1} a_0(\omega^i) + \theta^{m-2} a_1(\omega^i) + ... +
@@ -278,10 +290,47 @@ impl<F: WithSmallOrderMulGroup<3>> Permuted<F> {
             // case this z[u] value will be zero. (bad!)
             assert_eq!(z[u], F::ONE);
         }
+        */
 
-        let product_commitment = CS::commit_lagrange(params, &z);
-        let z = pk.vk.domain.lagrange_to_coeff(z);
+        let size_n = pk.vk.n() as i32;
+        let size_blinding_factors = blinding_factors as i32;
+        let one = F::ONE;
+        let random_values: Vec<F> = std::iter::repeat_with(|| F::random(&mut rng))
+            .take(blinding_factors)
+            .collect();
 
+        let mut permuted_input_expression_gpu = crate::DeviceMemPool::allocate::<F>(self.permuted_input_expression.values.len()); 
+        crate::DeviceMemPool::mem_copy_htod(&mut permuted_input_expression_gpu, &self.permuted_input_expression.values);
+
+        let mut permuted_table_expression_gpu = crate::DeviceMemPool::allocate::<F>(self.permuted_table_expression.values.len()); 
+        crate::DeviceMemPool::mem_copy_htod(&mut permuted_table_expression_gpu, &self.permuted_table_expression.values);
+
+        let mut compressed_input_expression_gpu = crate::DeviceMemPool::allocate::<F>(self.compressed_input_expression.values.len()); 
+        crate::DeviceMemPool::mem_copy_htod(&mut compressed_input_expression_gpu, &self.compressed_input_expression.values);
+
+        let mut compressed_table_expression_gpu = crate::DeviceMemPool::allocate::<F>(self.compressed_table_expression.values.len()); 
+        crate::DeviceMemPool::mem_copy_htod(&mut compressed_table_expression_gpu, &self.compressed_table_expression.values);
+
+        let mut z_gpu = crate::DeviceMemPool::allocate::<F>(size_n as usize); 
+
+        crate::commit_product_r(&permuted_input_expression_gpu, &permuted_table_expression_gpu,
+            &compressed_input_expression_gpu, &compressed_table_expression_gpu, &mut z_gpu, &beta, &gamma,
+             &random_values, &one, &size_blinding_factors, &size_n);
+
+        crate::DeviceMemPool::deallocate(permuted_input_expression_gpu);
+        crate::DeviceMemPool::deallocate(permuted_table_expression_gpu);
+        crate::DeviceMemPool::deallocate(compressed_input_expression_gpu);
+        crate::DeviceMemPool::deallocate(compressed_table_expression_gpu);
+
+        let mut z_gpu2 = crate::DeviceMemPool::allocate::<F>(size_n as usize); 
+        crate::DeviceMemPool::mem_copy_dtod(&mut z_gpu2, &z_gpu); 
+        let product_commitment = CS::commit_lagrang_gpu(params, &z_gpu);
+        crate::gpu_lagrange_to_coeff::<F>(&mut z_gpu2);  
+        let mut z = pk.vk.domain.empty_coeff();      
+        crate::DeviceMemPool::mem_copy_dtoh(&mut z.values, &z_gpu2); 
+        crate::DeviceMemPool::deallocate(z_gpu);
+        crate::DeviceMemPool::deallocate(z_gpu2);
+            
         // Hash product commitment
         transcript.write(&product_commitment)?;
 

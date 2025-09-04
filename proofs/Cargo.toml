@@ -50,6 +50,20 @@ plotters = { version = "0.3.7", default-features = false, optional = true }
 tabbycat = { version = "0.1", features = ["attributes"], optional = true }
 num-bigint = "0.4.6"
 
+blst = { version = "0.3.13", default-features = true }
+[dependencies.sppark]
+version = "^0.1.5"
+
+[build-dependencies.cc]
+version = "^1.2.19"
+
+[build-dependencies.which]
+version = "^4.4.2"
+
+[build-dependencies]
+cmake = "0.1"
+walkdir = "2"
+
 [dev-dependencies]
 assert_matches = "1.5"
 criterion = "0.7"
@@ -75,6 +89,9 @@ sanity-checks = []
 circuit-params = []
 cost-estimator = ["serde", "serde_derive"]
 derive_serde = ["halo2curves/derive_serde"]
+nvcc_sm_80 = []
+nvcc_sm_86 = []
+nvcc_sm_90 = []
 
 # This feature truncates challenges to half the size of the scalar field.
 truncated-challenges = []

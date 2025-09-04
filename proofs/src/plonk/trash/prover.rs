@@ -55,7 +55,12 @@ impl<F: WithSmallOrderMulGroup<3> + Ord> Argument<F> {
                 acc * trash_challenge + &expression
             });
 
-        let trash_commitment = CS::commit_lagrange(params, &compressed_expression);
+        //let trash_commitment = CS::commit_lagrange(params, &compressed_expression);
+        let mut poly_gpu = crate::DeviceMemPool::allocate::<F>(compressed_expression.len()); 
+        crate::DeviceMemPool::mem_copy_htod(&mut poly_gpu, &compressed_expression.values);     
+        let trash_commitment = CS::commit_lagrang_gpu(params, &poly_gpu);
+        crate::DeviceMemPool::deallocate(poly_gpu);
+
         let trash_poly = domain.lagrange_to_coeff(compressed_expression);
 
         // Hash permuted input commitment

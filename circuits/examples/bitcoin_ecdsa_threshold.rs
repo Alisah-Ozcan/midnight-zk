@@ -26,6 +26,7 @@ use midnight_proofs::{
 };
 use rand::{prelude::SliceRandom, rngs::OsRng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use std::time::Instant;
 
 type F = Scalar;
 
@@ -242,10 +243,13 @@ fn main() {
     let instance = (msg_hash, pks);
     let witness = signatures;
 
+    let start = Instant::now();
     let proof = compact_std_lib::prove::<BitcoinThresholdECDSA, blake2b_simd::State>(
         &srs, &pk, &relation, &instance, witness, OsRng,
     )
     .expect("Proof generation should not fail");
+    let duration = start.elapsed();
+    println!("Prove time: {:.2} second", duration.as_secs_f64());
 
     assert!(
         compact_std_lib::verify::<BitcoinThresholdECDSA, blake2b_simd::State>(

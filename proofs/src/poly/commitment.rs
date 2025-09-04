@@ -50,6 +50,16 @@ pub trait PolynomialCommitmentScheme<F: PrimeField>: Clone + Debug {
         poly: &Polynomial<F, LagrangeCoeff>,
     ) -> Self::Commitment;
 
+    /// Commit to a polynomial in coefficient form. (on GPU)
+    fn commit_gpu(params: &Self::Parameters, poly: &crate::GpuVec,) -> Self::Commitment;
+
+    /// Commit to a polynomial expressed in Lagrange evaluations form (over the
+    /// underlying domain specified in params). (on GPU)
+    fn commit_lagrang_gpu(
+        params: &Self::Parameters,
+        poly: &crate::GpuVec,
+    ) -> Self::Commitment;
+
     /// Create a multi-opening proof at a set of [ProverQuery]'s.
     fn multi_open<T: Transcript>(
         params: &Self::Parameters,
