@@ -75,7 +75,12 @@ impl<F: WithSmallOrderMulGroup<3>, CS: PolynomialCommitmentScheme<F>> Argument<F
         let random_poly: Polynomial<F, Coeff> = domain.coeff_from_vec(rand_vec);
 
         // Commit
-        let c = CS::commit(params, &random_poly);
+        //let c = CS::commit(params, &random_poly);
+        let mut poly_gpu = crate::DeviceMemPool::allocate::<F>(random_poly.len()); 
+        crate::DeviceMemPool::mem_copy_htod(&mut poly_gpu, &random_poly.values);     
+        let c = CS::commit_gpu(params, &poly_gpu);
+        crate::DeviceMemPool::deallocate(poly_gpu);
+                
         transcript.write(&c)?;
 
         Ok(Committed { random_poly })
@@ -98,7 +103,17 @@ impl<F: WithSmallOrderMulGroup<3>> Committed<F> {
         let h_poly = domain.divide_by_vanishing_poly(h_poly);
 
         // Obtain final h(X) polynomial
-        let mut h_poly = domain.extended_to_coeff(h_poly);
+        //let mut h_poly = domain.extended_to_coeff(h_poly);
+        let g_coset_value = domain.g_coset;
+        let g_coset_inv_value: F = g_coset_value.square(); 
+        let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(domain.extended_len()); 
+        let mut gpu_poly_extended = crate::DeviceMemPool::allocate::<F>(domain.extended_len()); 
+        crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &h_poly.values);
+        crate::gpu_extended_to_coeff(&mut gpu_poly_extended,&gpu_poly, &g_coset_value, &g_coset_inv_value);    
+        let mut h_poly = vec![F::ZERO; domain.extended_len() as usize];
+        crate::DeviceMemPool::mem_copy_dtoh(&mut h_poly, &gpu_poly_extended); 
+        crate::DeviceMemPool::deallocate(gpu_poly);
+        crate::DeviceMemPool::deallocate(gpu_poly_extended);
 
         // Truncate it to match the size of the quotient polynomial; the
         // evaluation domain might be slightly larger than necessary because
@@ -113,8 +128,17 @@ impl<F: WithSmallOrderMulGroup<3>> Committed<F> {
         drop(h_poly);
 
         // Compute commitments to each h(X) piece
-        let h_commitments: Vec<_> =
-            h_pieces.iter().map(|h_piece| CS::commit(params, h_piece)).collect();
+        let h_commitments: Vec<_> = h_pieces
+            .iter()
+            //.map(|h_piece| CS::commit(params, h_piece))
+            .map(|h_piece| {
+                let mut poly_gpu = crate::DeviceMemPool::allocate::<F>(h_piece.len()); 
+                crate::DeviceMemPool::mem_copy_htod(&mut poly_gpu, &h_piece.values);     
+                let c = CS::commit_gpu(params, &poly_gpu);
+                crate::DeviceMemPool::deallocate(poly_gpu);
+                c
+            })
+            .collect();
 
         // Hash each h(X) piece
         for c in h_commitments {

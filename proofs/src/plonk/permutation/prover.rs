@@ -154,8 +154,20 @@ impl Argument {
             // Set new last_z
             last_z = z[domain.n as usize - (blinding_factors + 1)];
 
-            let permutation_product_commitment = CS::commit_lagrange(params, &z);
-            let permutation_product_poly = domain.lagrange_to_coeff(z);
+            //let permutation_product_commitment = CS::commit_lagrange(params, &z);
+            let mut poly_gpu = crate::DeviceMemPool::allocate::<F>(z.len()); 
+            crate::DeviceMemPool::mem_copy_htod(&mut poly_gpu, &z.values);     
+            let permutation_product_commitment = CS::commit_lagrang_gpu(params, &poly_gpu);
+            crate::DeviceMemPool::deallocate(poly_gpu);
+
+            //let permutation_product_poly = domain.lagrange_to_coeff(z);
+            let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(z.values.len()); 
+            crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &z.values);
+            crate::gpu_lagrange_to_coeff::<F>(&mut gpu_poly);  
+            let mut permutation_product_poly = pk.vk.domain.empty_coeff();      
+            crate::DeviceMemPool::mem_copy_dtoh(&mut permutation_product_poly.values, &gpu_poly); 
+            crate::DeviceMemPool::deallocate(gpu_poly);
+
 
             // Hash the permutation product commitment
             transcript.write(&permutation_product_commitment)?;

@@ -18,6 +18,7 @@ midnight-proofs = { path = "../proofs", version = "0.5.1", default-features = fa
     "cost-estimator",
     "circuit-params",
     "committed-instances",
+    "nvcc_sm_80",
 ] }
 bench_macros = { path = "../bench-macros" }
 

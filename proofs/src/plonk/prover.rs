@@ -48,7 +48,13 @@ where
     for (poly_eval, value) in poly.iter_mut().zip(instances.iter()) {
         *poly_eval = *value;
     }
-    CS::commit_lagrange(params, &poly)
+    //CS::commit_lagrange(params, &poly)
+
+    let mut poly_gpu = crate::DeviceMemPool::allocate::<F>(poly.len()); 
+    crate::DeviceMemPool::mem_copy_htod(&mut poly_gpu, &poly.values);     
+    let commit = CS::commit_lagrang_gpu(params, &poly_gpu);
+    crate::DeviceMemPool::deallocate(poly_gpu);
+    commit
 }
 
 #[cfg_attr(feature = "bench-internal", inner_bench)]
@@ -233,8 +239,18 @@ where
             .map(|a| {
                 a.advice_polys
                     .into_iter()
-                    .map(|p| domain.lagrange_to_coeff(p))
-                    .collect::<Vec<_>>()
+                    //.map(|p| domain.lagrange_to_coeff(p))
+                    .map(|p|
+                    { 
+                        let mut lagrange_vec = domain.empty_coeff();
+                        let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(p.values.len()); 
+                        crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &p.values);
+                        crate::gpu_lagrange_to_coeff::<F>(&mut gpu_poly);        
+                        crate::DeviceMemPool::mem_copy_dtoh(&mut lagrange_vec.values, &gpu_poly); 
+                        crate::DeviceMemPool::deallocate(gpu_poly);
+                        lagrange_vec
+                    })
+                    .collect()
             })
             .collect::<Vec<_>>());
 
@@ -399,6 +415,7 @@ where
         + Ord
         + FromUniformBytes<64>,
 {
+    crate::DeviceMemPool::initialize(0);
     let trace = compute_trace(
         params,
         pk,
@@ -650,7 +667,19 @@ fn compute_h_poly<F: WithSmallOrderMulGroup<3>, CS: PolynomialCommitmentScheme<F
         .map(|advice_polys| {
             advice_polys
                 .iter()
-                .map(|poly| pk.vk.get_domain().coeff_to_extended(poly.clone()))
+                .map(|poly| 
+                {
+                    let mut values_in = domain.empty_extended();
+                    let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(poly.values.len()); 
+                    let mut gpu_poly_extended = crate::DeviceMemPool::allocate::<F>(domain.extended_len()); 
+                    crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &poly.values);
+                    crate::gpu_coeff_to_extended(&mut gpu_poly_extended,&gpu_poly, &g_coset_value, &g_coset_inv_value);        
+                    crate::DeviceMemPool::mem_copy_dtoh(&mut values_in.values, &gpu_poly_extended); 
+                    crate::DeviceMemPool::deallocate(gpu_poly);
+                    crate::DeviceMemPool::deallocate(gpu_poly_extended);
+                    values_in
+                }                  
+                )
                 .collect()
         })
         .collect();
@@ -659,7 +688,18 @@ fn compute_h_poly<F: WithSmallOrderMulGroup<3>, CS: PolynomialCommitmentScheme<F
         .map(|instance_polys| {
             instance_polys
                 .iter()
-                .map(|poly| pk.vk.get_domain().coeff_to_extended(poly.clone()))
+                .map(|poly|
+                {
+                    let mut values_in = domain.empty_extended();
+                    let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(poly.values.len()); 
+                    let mut gpu_poly_extended = crate::DeviceMemPool::allocate::<F>(domain.extended_len()); 
+                    crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &poly.values);
+                    crate::gpu_coeff_to_extended(&mut gpu_poly_extended,&gpu_poly, &g_coset_value, &g_coset_inv_value);        
+                    crate::DeviceMemPool::mem_copy_dtoh(&mut values_in.values, &gpu_poly_extended); 
+                    crate::DeviceMemPool::deallocate(gpu_poly);
+                    crate::DeviceMemPool::deallocate(gpu_poly_extended);
+                    values_in
+                })
                 .collect()
         })
         .collect();

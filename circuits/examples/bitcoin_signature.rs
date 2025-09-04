@@ -20,6 +20,7 @@ use midnight_proofs::{
 };
 use rand::rngs::OsRng;
 use sha2::Digest;
+use std::time::Instant;
 
 type F = midnight_curves::Fq;
 
@@ -190,10 +191,13 @@ fn main() {
         secp256k1Scalar::from_bytes(&reverse_bytes(&sig_bytes[32..])).expect("Secp scalar"),
     );
 
+    let start = Instant::now();
     let proof = compact_std_lib::prove::<BitcoinSigExample, blake2b_simd::State>(
         &srs, &pk, &relation, &instance, witness, OsRng,
     )
     .expect("Proof generation should not fail");
+    let duration = start.elapsed();
+    println!("Prove time: {:.2} second", duration.as_secs_f64());
 
     assert!(
         compact_std_lib::verify::<BitcoinSigExample, blake2b_simd::State>(
