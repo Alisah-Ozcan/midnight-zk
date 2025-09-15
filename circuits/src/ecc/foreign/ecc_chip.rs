@@ -855,6 +855,7 @@ where
 
         let scalars = [glv_scalars, non_glv_scalars].concat();
         let bases = [glv_bases, non_glv_bases].concat();
+        println!("MSM with glv {} bases", bases.len());
 
         let mut decomposed_scalars = vec![];
         for (s, nb_bits_s) in scalars.iter() {
@@ -1773,6 +1774,9 @@ where
             panic!("msm: `scalars` and `bases` should have the same length")
         };
 
+        // println!("windowed_msm: computing MSM with {} bases", bases.len());
+        // let start = std::time::Instant::now();
+
         if scalars.is_empty() {
             return self.assign_fixed(layouter, C::CryptographicGroup::identity());
         }
@@ -1927,6 +1931,7 @@ where
         // because k = 4 minimizes 2^k + 256 / k.
         // TODO: Pick window size based on C::Scalar::NUM_BITS?
         const WS: usize = 4;
+        println!("windowed_msm (upper level): computing MSM with {} bases", bases.len());
         let scalars = scalars
             .iter()
             .map(|bits| {

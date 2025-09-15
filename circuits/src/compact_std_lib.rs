@@ -1560,14 +1560,17 @@ where
     G1Projective: Hashable<H>,
     F: Hashable<H> + Sampleable<H>,
 {
+    println!("starting proving...");
     let pi = R::format_instance(instance);
     let com_inst = R::format_committed_instances(&witness);
+    println!("formatted instance");
     let circuit = MidnightCircuit {
         relation,
         instance: Value::known(instance.clone()),
         witness: Value::known(witness),
         nb_public_inputs: Rc::new(RefCell::new(None)),
     };
+    println!("created circuit");
     BlstPLONK::<MidnightCircuit<R>>::prove::<H>(
         params,
         &pk.pk,

@@ -183,8 +183,17 @@ where
         let x3 = truncate(x3);
 
         for q_poly in q_polys.iter() {
+            let mut gpu_poly = crate::DeviceMemPool::allocate::<E::Fr>(q_poly.len()); 
+            crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &q_poly.values); 
+            let mut gpu_eval_res = crate::DeviceMemPool::allocate::<E::Fr>(1); 
+            crate::gpu_eval_polynomial(&gpu_poly, &x3, &mut gpu_eval_res);
+            let mut eval_values = [E::Fr::ZERO; 1];
+            crate::DeviceMemPool::mem_copy_dtoh(&mut eval_values, &gpu_eval_res);
+            crate::DeviceMemPool::deallocate(gpu_poly);
+            crate::DeviceMemPool::deallocate(gpu_eval_res);
+            let eval = eval_values[0];
             transcript
-                .write(&eval_polynomial(&q_poly.values, x3))
+                .write(&eval)
                 .map_err(|_| Error::OpeningError)?;
         }
 
@@ -201,7 +210,16 @@ where
 
             inner_product(&polys, powers)
         };
-        let v = eval_polynomial(&final_poly, x3);
+        let mut gpu_poly = crate::DeviceMemPool::allocate::<E::Fr>(final_poly.len()); 
+        crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &final_poly.values); 
+        let mut gpu_eval_res = crate::DeviceMemPool::allocate::<E::Fr>(1); 
+        crate::gpu_eval_polynomial(&gpu_poly, &x3, &mut gpu_eval_res);
+        let mut eval_values = [E::Fr::ZERO; 1];
+        crate::DeviceMemPool::mem_copy_dtoh(&mut eval_values, &gpu_eval_res);
+        crate::DeviceMemPool::deallocate(gpu_poly);
+        crate::DeviceMemPool::deallocate(gpu_eval_res);
+        let v = eval_values[0];
+        // let v = eval_polynomial(&final_poly, x3);
 
         let pi = {
             let pi_poly = Polynomial {

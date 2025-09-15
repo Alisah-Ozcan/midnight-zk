@@ -373,12 +373,24 @@ where
                 };
 
                 // Synthesize the circuit to obtain the witness and other information.
+                println!("synthesizing circuit");
                 ConcreteCircuit::FloorPlanner::synthesize(
                     &mut witness,
                     circuit,
                     config.clone(),
                     meta.constants.clone(),
                 )?;
+                // println!("witness advice len: {}", witness.advice.len());
+                // for (i, advice_col) in witness.advice.iter().enumerate() {
+                //     println!(
+                //         "witness advice col {}: {:?}",
+                //         i,
+                //         advice_col.values.iter().take(10).collect::<Vec<_>>()
+                //     );
+                // }
+                // println!("witness advice: {:#?}", witness.advice);
+                // ConcreteCircuit doesn't necessarily implement Debug
+                // println!("circuit: {:?}", circuit);
 
                 //let mut advice_values = batch_invert_rational::<F>(
                 //    witness
@@ -816,6 +828,7 @@ where
     // Construct the vanishing argument's h(X) commitments
     let vanishing =
         vanishing.construct::<CS, T>(params, pk.get_vk().get_domain(), h_poly, transcript)?;
+    let start = std::time::Instant::now();
 
     let x: F = transcript.squeeze_challenge();
 
@@ -825,7 +838,16 @@ where
         // Evaluate polynomials at omega^i x
         for &(column, at) in meta.instance_queries.iter() {
             if column.index() < nb_committed_instances {
-                let eval = eval_polynomial(&instance[column.index()], domain.rotate_omega(x, at));
+                // let eval = eval_polynomial(&instance[column.index()], domain.rotate_omega(x, at));
+                let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(instance[column.index()].len());
+                crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &instance[column.index()]);
+                let mut gpu_eval_res = crate::DeviceMemPool::allocate::<F>(1); 
+                let x = domain.rotate_omega(x, at);
+                crate::gpu_eval_polynomial(&gpu_poly, &x, &mut gpu_eval_res);
+                let mut eval_values = [F::ZERO; 1];
+                crate::DeviceMemPool::mem_copy_dtoh(&mut eval_values, &gpu_eval_res);
+                let eval = eval_values[0];
+
                 transcript.write(&eval)?;
             }
         }
@@ -838,7 +860,17 @@ where
             .advice_queries
             .iter()
             .map(|&(column, at)| {
-                eval_polynomial(&advice[column.index()], domain.rotate_omega(x, at))
+                // eval_polynomial(&advice[column.index()], domain.rotate_omega(x, at))
+                let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(advice[column.index()].len());
+                crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &advice[column.index()]);
+                let mut gpu_eval_res = crate::DeviceMemPool::allocate::<F>(1); 
+                let x = domain.rotate_omega(x, at);
+                crate::gpu_eval_polynomial(&gpu_poly, &x, &mut gpu_eval_res);
+                let mut eval_values = [F::ZERO; 1];
+                crate::DeviceMemPool::mem_copy_dtoh(&mut eval_values, &gpu_eval_res);
+                let eval = eval_values[0];
+                eval
+
             })
             .collect();
 
@@ -853,7 +885,17 @@ where
         .fixed_queries
         .iter()
         .map(|&(column, at)| {
-            eval_polynomial(&pk.fixed_polys[column.index()], domain.rotate_omega(x, at))
+
+            // eval_polynomial(&pk.fixed_polys[column.index()], domain.rotate_omega(x, at))
+            let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(pk.fixed_polys[column.index()].len()); 
+            crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &pk.fixed_polys[column.index()]); 
+            let mut gpu_eval_res = crate::DeviceMemPool::allocate::<F>(1); 
+            let x = domain.rotate_omega(x, at);
+            crate::gpu_eval_polynomial(&gpu_poly, &x, &mut gpu_eval_res);
+            let mut eval_values = [F::ZERO; 1];
+            crate::DeviceMemPool::mem_copy_dtoh(&mut eval_values, &gpu_eval_res);
+            let eval = eval_values[0];
+            eval
         })
         .collect();
 
@@ -942,6 +984,7 @@ where
         // We query the h(X) polynomial at x
         .chain(vanishing.open(x))
         .collect::<Vec<_>>();
+    println!("Vanishing argument evaluation took: {:?}", start.elapsed());
 
     CS::multi_open(params, &queries, transcript).map_err(|_| Error::ConstraintSystemFailure)
 }
@@ -973,7 +1016,10 @@ where
         + Ord
         + FromUniformBytes<64>,
 {   
+    println!("GPU memory pool initializing with 0 bytes");
     crate::DeviceMemPool::initialize(0);
+    println!("GPU memory pool initialized with 0 bytes");
+    let start = std::time::Instant::now();
     let trace = compute_trace(
         params,
         pk,
@@ -984,6 +1030,7 @@ where
         rng,
         transcript,
     )?;
+    println!("Trace computation took: {:?}", start.elapsed());
     finalise_proof(
         params,
         pk,

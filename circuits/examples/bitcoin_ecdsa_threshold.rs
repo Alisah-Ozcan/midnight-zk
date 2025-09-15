@@ -178,7 +178,17 @@ impl Relation for BitcoinThresholdECDSA {
         let mut scalars = vec![sum_alphas_times_msg_hash];
         scalars.extend(r_i_times_alpha_i);
         scalars.extend(neg_s_i_times_alpha_i);
-
+        // println!("windowed_msm: about to call msm with {} bases", bases.len());
+        // for (i, base) in bases.iter().enumerate() {
+        //     base.value().map(|b| {
+        //     println!("base[{}]: {:?}", i, b.to_affine());
+        //     });
+        // }
+        // for (i, scalar) in scalars.iter().enumerate() {
+        //     scalar.value().map(|s| {
+        //     println!("scalar[{}]: {:?}", i, s);
+        //     });
+        // }
         let res = secp256k1_curve.msm(layouter, &scalars, &bases)?;
 
         secp256k1_curve.assert_zero(layouter, &res)
@@ -243,6 +253,7 @@ fn main() {
     let instance = (msg_hash, pks);
     let witness = signatures;
 
+    println!("starting proving...*");
     let start = Instant::now();
     let proof = compact_std_lib::prove::<BitcoinThresholdECDSA, blake2b_simd::State>(
         &srs, &pk, &relation, &instance, witness, OsRng,

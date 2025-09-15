@@ -194,7 +194,17 @@ impl<F: PrimeField> super::ProvingKey<F> {
         F: Hashable<T::Hash>,
     {
         // Hash permutation evals
-        for eval in self.polys.iter().map(|poly| eval_polynomial(poly, x)) {
+        for eval in self.polys.iter().map(|poly| 
+             {
+            //eval_polynomial(poly, x)
+            let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(poly.len()); 
+            crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &poly); 
+            let mut gpu_eval_res = crate::DeviceMemPool::allocate::<F>(1); 
+            crate::gpu_eval_polynomial(&gpu_poly, &x, &mut gpu_eval_res);
+            let mut eval_values = [F::ZERO; 1];
+            crate::DeviceMemPool::mem_copy_dtoh(&mut eval_values, &gpu_eval_res);
+            let eval = eval_values[0];
+            eval}) {
             transcript.write(&eval)?;
         }
 

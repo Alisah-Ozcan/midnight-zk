@@ -42,6 +42,7 @@ typedef uint64_t gpu_addr_t;
 #include "kernels/evaluate_h.cuh"
 #include "kernels/prefix_product.cuh"
 #include "kernels/rand_msm_helper.cuh"
+#include "kernels/vanishing.cuh"
 // RMM device vector utilities
 // Temporarily undefine our `fmt` macro while including RMM (which brings in {fmt}).
 #pragma push_macro("fmt")
@@ -425,6 +426,60 @@ extern "C" RustError::by_value gpu_memory_transfer_device_to_device(gpu_addr_t* 
     return RustError{cudaSuccess};
 }
 
+
+extern "C" RustError::by_value gpu_mul_zetas_ptr_(gpu_addr_t in_ptr, size_t npoints, const fr_t* zeta, const fr_t* zeta_inv) {
+    const gpu_t& gpu = select_gpu();
+
+    try {
+
+        fr_t* d_in_pointer = reinterpret_cast<fr_t*>(in_ptr);
+
+        const int threads_per_block = 512;
+        size_t grid_size = (int)((npoints + threads_per_block - 1) / threads_per_block);
+
+        mul_inv_zeta<<<grid_size, threads_per_block, 0, gpu>>>(
+            d_in_pointer, d_in_pointer, npoints, *zeta, *zeta_inv);
+
+        gpu.sync();      
+
+    } catch (const cuda_error& e) {
+        gpu.sync();
+#ifdef TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE
+        return RustError{e.code(), e.what()};
+#else
+        return RustError{e.code()};
+#endif
+    }
+
+    return RustError{cudaSuccess};
+}
+
+
+extern "C" RustError::by_value sppark_ntt_ptr(size_t device_id, gpu_addr_t inout_ptr,
+                                              uint32_t lg_domain_size,
+                                              NTT::InputOutputOrder ntt_order,
+                                              NTT::Direction ntt_direction,
+                                              NTT::Type ntt_type) {
+    auto& gpu = select_gpu(device_id);
+
+    try
+    {
+        NTT::Base_dev_ptr(gpu, (fr_t*) inout_ptr, lg_domain_size, ntt_order, ntt_direction, ntt_type);
+    } catch (const cuda_error& e) {
+        gpu.sync();
+#ifdef TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE
+        return RustError{e.code(), e.what()};
+#else
+        return RustError{e.code()};
+#endif
+    }
+
+    return RustError{cudaSuccess};
+}
+
+
+
+
 __global__ void zero_padding_coset_kernel(fr_t* input, fr_t* output, const fr_t g_coset,
                                           const fr_t g_coset_inv, int polysize) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -562,6 +617,46 @@ extern "C" RustError::by_value gpu_intt(gpu_addr_t* input_ptr, size_t input_len)
 
     return RustError{cudaSuccess};
 }
+
+
+extern "C" RustError::by_value gpu_divide_by_vanishing_poly_ptr_(gpu_addr_t in1_ptr, const fr_t* in2,
+                                                                 size_t npoints, size_t mask) {
+    const gpu_t& gpu = select_gpu();
+
+    try {
+        size_t size_in2 = mask + 1;
+
+        fr_t* d_in1_pointer = reinterpret_cast<fr_t*>(in1_ptr);
+
+
+
+        gpu_ptr_t<fr_t> d_in2((fr_t*)gpu.Dmalloc(size_in2 * sizeof(fr_t)));
+        fr_t* d_in2_pointer = &d_in2[0];
+        gpu.HtoD(d_in2_pointer, in2, size_in2);
+
+
+        const int threads_per_block = 512;
+        size_t grid_size = (int)((npoints + threads_per_block - 1) / threads_per_block);
+
+        mul_chunks<<<grid_size, threads_per_block, 0, gpu>>>(
+            d_in1_pointer, d_in2_pointer, d_in1_pointer, npoints, mask);
+
+        gpu.sync();      
+
+    } catch (const cuda_error& e) {
+        gpu.sync();
+#ifdef TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE
+        return RustError{e.code(), e.what()};
+#else
+        return RustError{e.code()};
+#endif
+    }
+
+    return RustError{cudaSuccess};
+}
+
+
+
 
 class RandomMSM {
    public:
@@ -831,7 +926,7 @@ extern "C" RustError::by_value custom_gates_evaluation(
     int* rotation_value, size_t rotation_ptr_len, int rot_scale, int poly_size
 
 ) {
-    constexpr size_t CHUNK_SIZE = 1 << 18; // To minimize memory usage
+    constexpr size_t CHUNK_SIZE = 1 << 12; // To minimize memory usage
     const gpu_t& gpu = select_gpu();
 
     size_t c_size = poly_size;
@@ -1249,6 +1344,145 @@ __global__ void pow_mul_kernel(fr_t base, fr_t* __restrict__ out,
     out[tid] = result;
 }
 
+
+__global__ void eval_poly_step_1(fr_t base,
+                                 fr_t* __restrict__ out,
+                                 const fr_t* poly) {
+    const uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t tid  = threadIdx.x;
+
+    extern __shared__ fr_t sdata[];
+
+
+    fr_t base_r = base;
+    uint32_t p = gid;
+    fr_t delta_start_r = poly[gid];
+
+    fr_t sqr = base_r;
+    base_r = fr_t::csel(base_r, fr_t::one(), p & 1);
+
+#pragma unroll 1
+    while (p >>= 1) {
+        sqr *= sqr;
+        if (p & 1) base_r *= sqr;
+    }
+
+    fr_t result = base_r * delta_start_r;
+    sdata[tid] = result;
+
+    __syncthreads();
+
+    // Step 3: reduction in shared memory
+    for (uint32_t s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        out[blockIdx.x] = sdata[0];
+    }
+
+}
+
+
+__global__ void reduce_block_sums(const fr_t* block_sums,
+                                  fr_t* result,
+                                  size_t mul) {
+    extern __shared__ fr_t sdata[];
+    const uint32_t tid = threadIdx.x;
+    const uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    uint32_t i = tid;
+
+    // Step 1: load block sums into shared memory
+    sdata[tid] = block_sums[i * mul]; // (i < num_blocks) ? block_sums[i] : fr_t::zero();
+    __syncthreads();
+
+    // Step 2: reduce in shared memory
+    for (uint32_t s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s && (tid + s) < blockDim.x) {
+            sdata[tid] += sdata[tid + s];  // modular addition if fr_t is mod type
+        }
+        __syncthreads();
+    }
+
+    // Step 3: write final sum
+    if (tid == 0) {
+        result[gid] = sdata[0];
+    }
+}
+
+
+extern "C" RustError::by_value gpu_eval_poly(gpu_addr_t in_ptr,
+                                             size_t npoints,
+                                             fr_t *base,
+                                             gpu_addr_t out_ptr) {
+    const gpu_t& gpu = select_gpu();
+    const int threads_per_block = 512;
+    const size_t shared_mem_size = threads_per_block * sizeof(fr_t);
+
+    size_t n_acc = npoints;
+    size_t mul = 1;
+
+    // printf("n_acc: %zu\n", n_acc);
+
+    try {
+        fr_t* d_in_pointer = reinterpret_cast<fr_t*>(in_ptr);
+        size_t grid_size = (int)((npoints + threads_per_block - 1) / threads_per_block);
+
+        fr_t* block_sums = reinterpret_cast<fr_t*>(DeviceMemoryPool::instance().allocate(grid_size * sizeof(fr_t), gpu));
+
+        eval_poly_step_1<<<grid_size, threads_per_block, shared_mem_size, gpu>>>(*base, block_sums, d_in_pointer);
+        gpu.sync();
+
+        n_acc = grid_size;
+
+        while (n_acc > 1) {
+            int next_threads_per_block;
+            fr_t *d_out_ptr;
+            if (n_acc > threads_per_block) {
+                grid_size = (n_acc + threads_per_block - 1) / threads_per_block;
+                next_threads_per_block = threads_per_block;
+                d_out_ptr = block_sums;
+            }
+            else {
+                grid_size = 1;
+                next_threads_per_block = n_acc;
+                d_out_ptr = reinterpret_cast<fr_t*>(out_ptr);
+            }
+
+            // printf("n_acc: %zu, mul: %zu, grid_size: %zu, next_threads_per_block: %d\n", n_acc, mul,
+            //        grid_size, next_threads_per_block);
+
+            reduce_block_sums<<<grid_size, next_threads_per_block, shared_mem_size, gpu>>>(
+                block_sums, d_out_ptr, mul);
+            gpu.sync();
+
+            n_acc = grid_size;
+
+            mul *= threads_per_block;
+        }
+
+        DeviceMemoryPool::instance().deallocate(block_sums, grid_size * sizeof(fr_t), gpu);
+
+
+    } catch (const cuda_error& e) {
+        gpu.sync();
+#ifdef TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE
+        return RustError{e.code(), e.what()};
+#else
+        return RustError{e.code()};
+#endif
+    }
+
+    return RustError{cudaSuccess};
+}
+
+
+
+
 __global__ void mul_kernel(fr_t* value, const fr_t constant) {
     const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -1625,7 +1859,7 @@ extern "C" RustError::by_value lookups_evaluation(
     const fr_t* gamma, const fr_t* theta, const fr_t* trash_challenge, const fr_t* y,
     const fr_t* constants, size_t constants_ptr_len, int* rotation_value,
     size_t rotation_ptr_len, int rot_scale, int poly_size) {
-    constexpr size_t CHUNK_SIZE = 1 << 18; // To minimize memory usage
+    constexpr size_t CHUNK_SIZE = 1 << 12; // To minimize memory usage
     const gpu_t& gpu = select_gpu();
 
     size_t c_size = poly_size;

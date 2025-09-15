@@ -13,7 +13,7 @@ use crate::{
         Polynomial, ProverQuery,
     },
     transcript::{Hashable, Transcript},
-    utils::arithmetic::{eval_polynomial, parallelize},
+    utils::arithmetic::{eval_polynomial, parallelize}, GpuVec,
 };
 
 #[derive(Debug)]
@@ -98,45 +98,55 @@ impl<F: WithSmallOrderMulGroup<3>> Committed<F> {
         F: Hashable<T::Hash>,
     {
         // Divide by t(X) = X^{params.n} - 1.
-        let h_poly = domain.divide_by_vanishing_poly(h_poly);
-
-        // Obtain final h(X) polynomial
-        //let mut h_poly = domain.extended_to_coeff(h_poly);
-        let g_coset_value = domain.g_coset;
-        let g_coset_inv_value: F = g_coset_value.square(); 
         let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(domain.extended_len()); 
-        let mut gpu_poly_extended = crate::DeviceMemPool::allocate::<F>(domain.extended_len()); 
         crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &h_poly.values);
-        crate::gpu_extended_to_coeff(&mut gpu_poly_extended,&gpu_poly, &g_coset_value, &g_coset_inv_value);    
-        let mut h_poly = vec![F::ZERO; domain.extended_len() as usize];
-        crate::DeviceMemPool::mem_copy_dtoh(&mut h_poly, &gpu_poly_extended); 
-        crate::DeviceMemPool::deallocate(gpu_poly);
-        crate::DeviceMemPool::deallocate(gpu_poly_extended);
+        domain.divide_by_vanishing_poly_gpu(&gpu_poly);
 
-        // Truncate it to match the size of the quotient polynomial; the
-        // evaluation domain might be slightly larger than necessary because
-        // it always lies on a power-of-two boundary.
-        h_poly.truncate(domain.n as usize * domain.get_quotient_poly_degree());
+
+        domain.extended_to_coeff_gpu(&mut gpu_poly);
+
+        let mut h_poly = vec![F::ZERO; gpu_poly.len()];
+        crate::DeviceMemPool::mem_copy_dtoh(&mut h_poly, &gpu_poly); 
+
+        // println!("First 16 elements of h_poly: {:?}", &h_poly[..16]);
+        // println!("Last 16 elements of h_poly: {:?}", &h_poly[h_poly.len() - 16..]);
+        // println!("h_poly size: {}", h_poly.len());
+        
+
+        let pieces_count = gpu_poly.len() / (domain.n as usize);
+        let piece_size = domain.n as usize;
+
+        let h_pieces_gpu: Vec<GpuVec> = (0..pieces_count)
+            .map(|i| {
+                // Calculate offset for each piece in GPU memory
+                let offset_bytes = i * piece_size * gpu_poly.elem_size;
+                let piece_gpu_ptr = gpu_poly.addr + offset_bytes as u64;
+
+                GpuVec {
+                    addr: piece_gpu_ptr,
+                    size_bytes: piece_size * gpu_poly.elem_size,
+                    elem_size: gpu_poly.elem_size,
+
+                }
+            })
+            .collect();
+
+        let h_commitments: Vec<_> = h_pieces_gpu
+            .iter()
+            .map(|h_piece| {
+                CS::commit_gpu(params, &h_piece)
+            })
+            .collect();
 
         // Split h(X) up into pieces
         let h_pieces = h_poly
             .chunks_exact(domain.n as usize)
             .map(|v| domain.coeff_from_vec(v.to_vec()))
             .collect::<Vec<_>>();
-        drop(h_poly);
 
-        // Compute commitments to each h(X) piece
-        let h_commitments: Vec<_> = h_pieces
-            .iter()
-            //.map(|h_piece| CS::commit(params, h_piece))
-            .map(|h_piece| {
-                let mut poly_gpu = crate::DeviceMemPool::allocate::<F>(h_piece.len()); 
-                crate::DeviceMemPool::mem_copy_htod(&mut poly_gpu, &h_piece.values);     
-                let c = CS::commit_gpu(params, &poly_gpu);
-                crate::DeviceMemPool::deallocate(poly_gpu);
-                c
-            })
-            .collect();
+        drop(h_poly);
+        crate::DeviceMemPool::deallocate(gpu_poly);
+
 
         // Hash each h(X) piece
         for c in h_commitments {
@@ -160,7 +170,13 @@ impl<F: WithSmallOrderMulGroup<3>> Constructed<F> {
     where
         F: Hashable<T::Hash>,
     {
+        let start = std::time::Instant::now();
         let xn: F = x.pow_vartime([domain.n]);
+        println!("domain.n: {}", domain.n);
+        println!("h_pieces len: {}", self.h_pieces.len());
+        for (i, piece) in self.h_pieces.iter().enumerate() {
+            println!("h_pieces[{}] size: {}", i, piece.values.len());
+        }
         let h_poly = self
             .h_pieces
             .into_iter()
@@ -168,8 +184,23 @@ impl<F: WithSmallOrderMulGroup<3>> Constructed<F> {
             .reduce(|acc, eval| acc * xn + eval)
             .expect("H pieces should not be empty");
 
-        let random_eval = eval_polynomial(&self.committed.random_poly, x);
+        // println!("First 16 elements of h_poly: {:?}", &h_poly.values[..16]);
+        // println!("Last 16 elements of h_poly: {:?}", &h_poly.values[h_poly.values.len() - 16..]);
+        // println!("h_poly size: {}", h_poly.values.len());
+
+        // let random_eval = eval_polynomial(&self.committed.random_poly, x);
+      
+        let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(self.committed.random_poly.values.len()); 
+        crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &self.committed.random_poly.values); 
+        let mut gpu_eval_res = crate::DeviceMemPool::allocate::<F>(1); 
+        crate::gpu_eval_polynomial(&gpu_poly, &x, &mut gpu_eval_res);
+        let mut random_eval_values = [F::ZERO; 1];
+        crate::DeviceMemPool::mem_copy_dtoh(&mut random_eval_values, &gpu_eval_res);
+        let random_eval = random_eval_values[0];
+        crate::DeviceMemPool::deallocate(gpu_poly);
+        crate::DeviceMemPool::deallocate(gpu_eval_res);
         transcript.write(&random_eval)?;
+        println!("Vanishing argument evaluation took: {:?}", start.elapsed());
 
         Ok(Evaluated {
             h_poly,

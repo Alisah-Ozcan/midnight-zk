@@ -190,6 +190,14 @@ pub fn gpu_coeff_to_extended<T: std::clone::Clone>(
     };
 }
 
+
+
+
+
+
+
+
+
 extern "C" {
     fn gpu_coset_intt(
         input_ptr: *const GpuPtr, 
@@ -329,6 +337,141 @@ where
 
     ret + ret2
 }
+
+
+
+
+
+
+
+extern "C" {
+    fn gpu_divide_by_vanishing_poly_ptr_(
+        in1_gpu_ptr: GpuPtr,
+        in2: *const core::ffi::c_void,
+        npoints: usize,
+        mask: usize
+    ) -> sppark::Error;
+}
+
+#[allow(unsafe_code)]
+pub fn gpu_divide_by_vanishing_poly_ptr<T>(
+    in1: &GpuVec, 
+    in2: &[T],
+    mask: usize
+) {
+    let npoints = in1.len();
+    if (npoints & (npoints - 1)) != 0 {
+        panic!("npoints is not power of 2");
+    }
+    if (mask & (mask + 1)) != 0 {
+        panic!("(mask + 1) is not power of 2");
+    }
+
+    let err = unsafe {
+        gpu_divide_by_vanishing_poly_ptr_(
+            in1.addr,
+            in2.as_ptr() as *const _,
+            npoints,
+            mask
+        )
+    };
+
+    if err.code != 0 {
+        panic!("{}", String::from(err));
+    }
+}
+
+
+
+extern "C" {
+    fn gpu_eval_poly(
+        in_ptr: GpuPtr,
+        npoints: usize,
+        base: *const core::ffi::c_void,
+        out_ptr: GpuPtr,
+    ) -> sppark::Error;
+}
+
+/// Evaluate a polynomial (given in coefficient form) at a field element `base` on the GPU.
+/// The input `poly` is a `GpuVec` of coefficients a_0 .. a_{n-1}. The result is written
+/// into `out` (which must have at least 1 field element of allocated space on device).
+/// Returns nothing; panics on CUDA error.
+#[allow(unsafe_code)]
+pub fn gpu_eval_polynomial<F: Clone>(poly: &GpuVec, base: &F, out: &GpuVec) {
+    if out.len() == 0 {
+        panic!("output GpuVec must have space for result (len >= 1)");
+    }
+    let npoints = poly.len();
+    if npoints == 0 { panic!("polynomial length must be > 0"); }
+    let err = unsafe { gpu_eval_poly(poly.addr, npoints, base as *const F as *const core::ffi::c_void, out.addr) };
+    if err.code != 0 { panic!("{}", String::from(err)); }
+}
+
+extern "C" {
+    fn gpu_mul_zetas_ptr_(
+        in_ptr: GpuPtr,
+        npoints: usize,
+        zeta: *const core::ffi::c_void,
+        zeta_inv: *const core::ffi::c_void,
+    ) -> sppark::Error;
+}
+
+/// Multiply GPU polynomial by powers of zeta (coset transformation)
+#[allow(unsafe_code)]
+pub fn gpu_mul_zetas_ptr<F>(
+    gpu_ptr: &GpuVec,
+    zeta: F,
+    zeta_inv: F
+) {
+    let err = unsafe {
+        gpu_mul_zetas_ptr_(
+            gpu_ptr.addr,
+            gpu_ptr.len(),
+            &zeta as *const F as *const core::ffi::c_void, //  Pass address of zeta
+            &zeta_inv as *const F as *const core::ffi::c_void, //  Pass address of zeta_inv
+        )
+    };
+
+    if err.code != 0 {
+        panic!("{}", String::from(err));
+    }
+}
+
+
+extern "C" {
+    fn sppark_ntt_ptr(
+        device_id: usize,
+        inout: GpuPtr,
+        lg_domain_size: u32,
+        ntt_order: NTTInputOutputOrder,
+        ntt_direction: NTTDirection,
+        ntt_type: NTTType,
+    ) -> sppark::Error;
+}
+
+/// Compute an in-place forward NTT on the input data.
+#[allow(unsafe_code)]
+pub fn intt_gpu_ptr(device_id: usize, inout: &GpuVec, order: NTTInputOutputOrder) {
+    if (inout.len() & (inout.len() - 1)) != 0 {
+        panic!("inout.len() is not power of 2");
+    }
+
+    let err = unsafe {
+        sppark_ntt_ptr(
+            device_id,
+            inout.addr,
+            inout.len().trailing_zeros(),
+            order,
+            NTTDirection::Inverse,
+            NTTType::Standard,
+        )
+    };
+
+    if err.code != 0 {
+        panic!("{}", String::from(err));
+    }
+}
+
 
 ///////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////
