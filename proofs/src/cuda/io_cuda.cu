@@ -1426,8 +1426,6 @@ extern "C" RustError::by_value gpu_eval_poly(gpu_addr_t in_ptr,
     size_t n_acc = npoints;
     size_t mul = 1;
 
-    // printf("n_acc: %zu\n", n_acc);
-
     try {
         fr_t* d_in_pointer = reinterpret_cast<fr_t*>(in_ptr);
         size_t grid_size = (int)((npoints + threads_per_block - 1) / threads_per_block);
@@ -1453,9 +1451,6 @@ extern "C" RustError::by_value gpu_eval_poly(gpu_addr_t in_ptr,
                 d_out_ptr = reinterpret_cast<fr_t*>(out_ptr);
             }
 
-            // printf("n_acc: %zu, mul: %zu, grid_size: %zu, next_threads_per_block: %d\n", n_acc, mul,
-            //        grid_size, next_threads_per_block);
-
             reduce_block_sums<<<grid_size, next_threads_per_block, shared_mem_size, gpu>>>(
                 block_sums, d_out_ptr, mul);
             gpu.sync();
@@ -1467,6 +1462,62 @@ extern "C" RustError::by_value gpu_eval_poly(gpu_addr_t in_ptr,
 
         DeviceMemoryPool::instance().deallocate(block_sums, grid_size * sizeof(fr_t), gpu);
 
+
+    } catch (const cuda_error& e) {
+        gpu.sync();
+#ifdef TAKE_RESPONSIBILITY_FOR_ERROR_MESSAGE
+        return RustError{e.code(), e.what()};
+#else
+        return RustError{e.code()};
+#endif
+    }
+
+    return RustError{cudaSuccess};
+}
+
+
+
+__global__ void gpu_inner_product_kernel(fr_t* out, const fr_t* in_poly, fr_t base, size_t npolys) {
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const size_t total_threads = gridDim.x * blockDim.x;
+
+    fr_t acc = 0;//fr_t::zero();
+
+    fr_t base_r = 1;
+
+    for (size_t i = 0; i < npolys; i++) {
+        fr_t poly_val   = in_poly  [i * total_threads + tid];
+        if (i > 0) {
+            acc += poly_val * base_r;
+            base_r *= base;
+        }
+        else {
+            acc = poly_val; // first one, base^0 == 1
+            base_r = base;
+        }
+    }
+    out[tid] = acc;
+}
+
+
+
+
+extern "C" RustError::by_value gpu_inner_product_c(gpu_addr_t in_poly_ptr,
+                                                   fr_t *base,
+                                                   size_t npoints,
+                                                   size_t npolys,
+                                                   gpu_addr_t out_poly_ptr) {
+    const gpu_t& gpu = select_gpu();
+    const int threads_per_block = 512;
+
+
+    try {
+        fr_t* d_in_poly_pointer = reinterpret_cast<fr_t*>(in_poly_ptr);
+        fr_t* d_out_poly_pointer = reinterpret_cast<fr_t*>(out_poly_ptr);
+        size_t grid_size = (int)((npoints + threads_per_block - 1) / threads_per_block);
+
+        gpu_inner_product_kernel<<<grid_size, threads_per_block, 0, gpu>>>(d_out_poly_pointer, d_in_poly_pointer, *base, npolys);
+        gpu.sync();
 
     } catch (const cuda_error& e) {
         gpu.sync();

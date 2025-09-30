@@ -202,13 +202,32 @@ where
         let final_poly = {
             let mut polys = q_polys;
             polys.push(f_poly);
-            #[cfg(feature = "truncated-challenges")]
-            let powers = truncated_powers(x4);
+            let mut gpu_poly = crate::DeviceMemPool::allocate::<E::Fr>(polys[0].values.len()*polys.len());
+            // let temp = gpu_poly.addr;
+            for (i, p) in polys.iter().enumerate() {
+                let offset = i * p.len();
+                crate::DeviceMemPool::mem_copy_htod_with_offset(&mut gpu_poly, &p.values, offset, p.len());
+            }
 
-            #[cfg(not(feature = "truncated-challenges"))]
-            let powers = powers(x4);
 
-            inner_product(&polys, powers)
+            // #[cfg(feature = "truncated-challenges")]
+            // let powers = truncated_powers(x4);
+
+            // #[cfg(not(feature = "truncated-challenges"))]
+            // let powers = powers(x4);
+
+            // let mut gpu_powers = crate::DeviceMemPool::allocate::<E::Fr>(powers.len());
+            let mut gpu_poly_out = crate::DeviceMemPool::allocate::<E::Fr>(polys[0].values.len()); 
+            crate::gpu_inner_product(&gpu_poly, &x4, &mut gpu_poly_out, polys.len());
+            let mut poly_values = vec![E::Fr::ZERO; gpu_poly_out.len()];
+            crate::DeviceMemPool::mem_copy_dtoh(&mut poly_values, &gpu_poly_out);
+            let poly_: Polynomial<<E as Engine>::Fr, Coeff>
+                = Polynomial {
+                    values: poly_values,
+                    _marker: PhantomData,
+                };            
+            poly_
+            // inner_product(&polys, powers)
         };
         let mut gpu_poly = crate::DeviceMemPool::allocate::<E::Fr>(final_poly.len()); 
         crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &final_poly.values); 

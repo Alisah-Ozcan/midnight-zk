@@ -10,6 +10,7 @@
 
 pub mod circuit;
 pub use halo2curves;
+use serde::de;
 pub mod plonk;
 pub mod poly;
 pub mod transcript;
@@ -19,7 +20,7 @@ pub mod utils;
  
 use std::ffi::CStr;
 use std::os::raw::{c_char};
-use std::fmt;
+use std::{fmt, usize};
 use sppark::{NTTInputOutputOrder, NTTDirection, NTTType};
 use core::ffi::{c_void, c_int};
 use group::Group;
@@ -136,6 +137,17 @@ impl DeviceMemPool {
     }
 
     #[allow(unsafe_code)]
+    pub fn mem_copy_htod_with_offset<T>(dest: &mut GpuVec, src: &[T], offset: usize, len: usize)   {
+        let elem_size = dest.elem_size;
+        let mut addr = dest.addr + (elem_size * offset) as u64;
+        let error = unsafe { gpu_memory_transfer_host_to_device(&mut addr, src.as_ptr() as *const c_void, elem_size * len) };
+
+        if error.code != 0 {
+            panic!("{}", String::from(error));
+        }
+    }
+
+    #[allow(unsafe_code)]
     pub fn mem_copy_dtoh<T>(dest: &mut [T], src: &GpuVec)   {
         assert!(src.size_bytes == (std::mem::size_of::<T>() * dest.len()));
         let error = unsafe { gpu_memory_transfer_device_to_host(dest.as_mut_ptr() as *mut _, &src.addr, src.size_bytes) };
@@ -189,13 +201,6 @@ pub fn gpu_coeff_to_extended<T: std::clone::Clone>(
         );
     };
 }
-
-
-
-
-
-
-
 
 
 extern "C" {
@@ -406,6 +411,35 @@ pub fn gpu_eval_polynomial<F: Clone>(poly: &GpuVec, base: &F, out: &GpuVec) {
     let err = unsafe { gpu_eval_poly(poly.addr, npoints, base as *const F as *const core::ffi::c_void, out.addr) };
     if err.code != 0 { panic!("{}", String::from(err)); }
 }
+
+
+/*
+extern "C" RustError::by_value gpu_inner_product_c(gpu_addr_t in_poly_ptr,
+                                                 gpu_addr_t in_scalar_ptr,
+                                                 size_t npoints,
+                                                 size_t npolys,
+                                                 gpu_addr_t out_poly_ptr)
+*/
+extern "C" {
+    fn gpu_inner_product_c(
+        in_poly_ptr: GpuPtr,
+        base: *const core::ffi::c_void,
+        npoints: usize,
+        npolys: usize,
+        out_poly_ptr: GpuPtr,
+    ) -> sppark::Error;
+}
+
+
+#[allow(unsafe_code)]
+pub fn gpu_inner_product<F: Clone>(polys: &GpuVec, base: &F, out: &GpuVec, npolys: usize) {
+
+    let npoints = polys.len() / npolys;
+    if out.len() != npoints  { panic!("out polynomial length must match scalars length"); }
+    let err = unsafe { gpu_inner_product_c(polys.addr, base as *const F as *const core::ffi::c_void, npoints, npolys, out.addr) };
+    if err.code != 0 { panic!("{}", String::from(err)); }
+}
+
 
 extern "C" {
     fn gpu_mul_zetas_ptr_(
