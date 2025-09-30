@@ -458,6 +458,8 @@ where
         + Ord
         + FromUniformBytes<64>,
 {
+    let domain = &pk.vk.domain;
+
     instances
         .iter()
         .map(|instance| -> Result<InstanceSingle<F>, Error> {
@@ -484,7 +486,10 @@ where
                     }
 
                     if is_committed_instance {
-                        transcript.common(&CS::commit_lagrange(params, &poly))?;
+                        let mut poly_gpu = crate::DeviceMemPool::allocate::<F>(poly.len()); 
+                        crate::DeviceMemPool::mem_copy_htod(&mut poly_gpu, &poly.values);     
+                        transcript.common(&CS::commit_lagrang_gpu(params, &poly_gpu))?;
+                        crate::DeviceMemPool::deallocate(poly_gpu);   
                     }
 
                     Ok(poly)
@@ -494,8 +499,13 @@ where
             let instance_polys: Vec<_> = instance_values
                 .iter()
                 .map(|poly| {
-                    let lagrange_vec = pk.vk.domain.lagrange_from_vec(poly.to_vec());
-                    pk.vk.domain.lagrange_to_coeff(lagrange_vec)
+                    let mut lagrange_vec = domain.empty_coeff();
+                    let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(poly.values.len()); 
+                    crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &poly.values);
+                    crate::gpu_lagrange_to_coeff::<F>(&mut gpu_poly);        
+                    crate::DeviceMemPool::mem_copy_dtoh(&mut lagrange_vec.values, &gpu_poly); 
+                    crate::DeviceMemPool::deallocate(gpu_poly);
+                    lagrange_vec
                 })
                 .collect();
 
