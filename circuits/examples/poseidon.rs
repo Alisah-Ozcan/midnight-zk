@@ -13,6 +13,7 @@ use midnight_proofs::{
 };
 use rand::{rngs::OsRng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use std::time::Instant;
 
 type F = midnight_curves::Fq;
 
@@ -75,10 +76,13 @@ fn main() {
     let witness: [F; 3] = core::array::from_fn(|_| F::random(&mut rng));
     let instance = <PoseidonChip<F> as HashCPU<F, F>>::hash(&witness);
 
+    let start = Instant::now();
     let proof = compact_std_lib::prove::<PoseidonExample, blake2b_simd::State>(
         &srs, &pk, &relation, &instance, witness, OsRng,
     )
     .expect("Proof generation should not fail");
+    let duration = start.elapsed();
+    println!("Prove time: {:.2} second", duration.as_secs_f64());
 
     assert!(
         compact_std_lib::verify::<PoseidonExample, blake2b_simd::State>(

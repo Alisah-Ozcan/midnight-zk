@@ -643,10 +643,14 @@ where
     Ok((advice, challenges))
 }
 
-fn compute_h_poly<F: WithSmallOrderMulGroup<3>, CS: PolynomialCommitmentScheme<F>>(
+fn compute_h_poly<F, CS>(
     pk: &ProvingKey<F, CS>,
     trace: &ProverTrace<F>,
-) -> Polynomial<F, ExtendedLagrangeCoeff> {
+) -> Polynomial<F, ExtendedLagrangeCoeff>
+where
+    F: WithSmallOrderMulGroup<3> + FromUniformBytes<64>,
+    CS: PolynomialCommitmentScheme<F>,
+{
     let ProverTrace {
         advice_polys,
         instance_polys,
@@ -661,6 +665,12 @@ fn compute_h_poly<F: WithSmallOrderMulGroup<3>, CS: PolynomialCommitmentScheme<F
         y,
         ..
     } = &trace;
+
+    let domain = pk.get_vk().get_domain();
+
+    let g_coset_value = domain.g_coset;
+    let g_coset_inv_value: F = g_coset_value.square(); 
+    
     // Calculate the advice and instance cosets
     let advice_cosets: Vec<Vec<Polynomial<F, ExtendedLagrangeCoeff>>> = advice_polys
         .iter()

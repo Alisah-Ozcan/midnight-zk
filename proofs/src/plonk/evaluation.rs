@@ -473,7 +473,6 @@ impl<F: WithSmallOrderMulGroup<3>> Evaluator<F> {
         let mut values = B::empty(domain);
 
         // Core expression evaluations
-        let num_threads = rayon::current_num_threads();
         for ((((advice, instance), lookups), trashcans), permutation) in advice
             .iter()
             .zip(instance.iter())
@@ -482,37 +481,6 @@ impl<F: WithSmallOrderMulGroup<3>> Evaluator<F> {
             .zip(permutations.iter())
         {
             // Custom gates
-            /*
-            rayon::scope(|scope| {
-                let chunk_size = size.div_ceil(num_threads);
-                for (thread_idx, values) in values.chunks_mut(chunk_size).enumerate() {
-                    let start = thread_idx * chunk_size;
-                    scope.spawn(move |_| {
-                        let mut eval_data = self.custom_gates.instance();
-                        for (i, value) in values.iter_mut().enumerate() {
-                            let idx = start + i;
-                            *value = self.custom_gates.evaluate::<B>(
-                                &mut eval_data,
-                                fixed,
-                                advice,
-                                instance,
-                                challenges,
-                                &beta,
-                                &gamma,
-                                &theta,
-                                &trash_challenge,
-                                &y,
-                                value,
-                                idx,
-                                rot_scale,
-                                isize,
-                            );
-                        }
-                    });
-                }
-            });
-            */
-
             let mut arena = Vec::new();
             let ffi_structs: Vec<crate::CalculationInfoFFI> = self.custom_gates.calculations
             .iter()
@@ -579,82 +547,6 @@ impl<F: WithSmallOrderMulGroup<3>> Evaluator<F> {
 
                 let permutation_gpu_ptr: Vec<u64> = permutation_gpu_vec.iter().map(|gpu_vec| gpu_vec.addr ).collect();
 
-                /*
-                let first_set_permutation_product_coset =
-                    permutation_product_cosets.first().unwrap();
-                let last_set_permutation_product_coset = permutation_product_cosets.last().unwrap();
-
-                // Permutation constraints
-                parallelize(&mut values, |values, start| {
-                    let mut beta_term = omega.pow_vartime([start as u64, 0, 0, 0]);
-                    for (i, value) in values.iter_mut().enumerate() {
-                        let idx = start + i;
-                        let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
-                        let r_last = get_rotation_idx(idx, last_rotation.0, rot_scale, isize);
-
-                        // Enforce only for the first set.
-                        // l_0(X) * (1 - z_0(X)) = 0
-                        *value = *value * y
-                            + ((one - first_set_permutation_product_coset[idx]) * l0[idx]);
-                        // Enforce only for the last set.
-                        // l_last(X) * (z_l(X)^2 - z_l(X)) = 0
-                        *value = *value * y
-                            + ((last_set_permutation_product_coset[idx]
-                                * last_set_permutation_product_coset[idx]
-                                - last_set_permutation_product_coset[idx])
-                                * l_last[idx]);
-                        // Except for the first set, enforce.
-                        // l_0(X) * (z_i(X) - z_{i-1}(\omega^(last) X)) = 0
-                        for set_idx in 0..sets.len() {
-                            if set_idx != 0 {
-                                *value = *value * y
-                                    + ((permutation_product_cosets[set_idx][idx]
-                                        - permutation_product_cosets[set_idx - 1][r_last])
-                                        * l0[idx]);
-                            }
-                        }
-                        // And for all the sets we enforce:
-                        // (1 - (l_last(X) + l_blind(X))) * (
-                        //   z_i(\omega X) \prod_j (p(X) + \beta s_j(X) + \gamma)
-                        // - z_i(X) \prod_j (p(X) + \delta^j \beta X + \gamma)
-                        // )
-                        let mut current_delta = delta_start * beta_term;
-                        for ((permutation_product_coset, columns), cosets) in
-                            permutation_product_cosets
-                                .iter()
-                                .zip(p.columns.chunks(chunk_len))
-                                .zip(permutation_pk_cosets.chunks(chunk_len))
-                        {
-                            let mut left = permutation_product_coset[r_next];
-                            for (values, permutation) in columns
-                                .iter()
-                                .map(|&column| match column.column_type() {
-                                    Any::Advice(_) => &advice[column.index()],
-                                    Any::Fixed => &fixed[column.index()],
-                                    Any::Instance => &instance[column.index()],
-                                })
-                                .zip(cosets.iter())
-                            {
-                                left *= values[idx] + beta * permutation[idx] + gamma;
-                            }
-
-                            let mut right = permutation_product_coset[idx];
-                            for values in columns.iter().map(|&column| match column.column_type() {
-                                Any::Advice(_) => &advice[column.index()],
-                                Any::Fixed => &fixed[column.index()],
-                                Any::Instance => &instance[column.index()],
-                            }) {
-                                right *= values[idx] + current_delta + gamma;
-                                current_delta *= &F::DELTA;
-                            }
-
-                            *value = *value * y + ((left - right) * l_active_row[idx]);
-                        }
-                        beta_term *= &omega;
-                    }
-                });
-                */
-
                 let columns_ffi_structs: Vec<crate::ColumnFFI> = p.columns
                 .iter()
                 .map(|c| c.to_ffi())
@@ -693,45 +585,24 @@ impl<F: WithSmallOrderMulGroup<3>> Evaluator<F> {
                 // Polynomials required for this lookup.
                 // Calculated here so these only have to be kept in memory for the short time
                 // they are actually needed.
-
-                //let product_coset = B::coeff_to_self(domain, lookup.product_poly.clone());
-                //let permuted_input_coset =
-                //    B::coeff_to_self(domain, lookup.permuted_input_poly.clone());
-                //let permuted_table_coset =
-                //    B::coeff_to_self(domain, lookup.permuted_table_poly.clone());
-
-                ///////////////////////////
                  
-                //let mut product_coset = B::empty(domain);
                 let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(lookup.product_poly.values.len()); 
                 let mut gpu_product_coset = crate::DeviceMemPool::allocate::<F>(domain.extended_len()); 
                 crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &lookup.product_poly.values);
                 crate::gpu_coeff_to_extended(&mut gpu_product_coset,&gpu_poly, &g_coset_value, &g_coset_inv_value);        
-                //crate::DeviceMemPool::mem_copy_dtoh(&mut product_coset.values, &gpu_product_coset); 
                 crate::DeviceMemPool::deallocate(gpu_poly);
-                //crate::DeviceMemPool::deallocate(gpu_product_coset);
 
-                //
-
-                //let mut permuted_input_coset = B::empty(domain);
                 let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(lookup.permuted_input_poly.values.len()); 
                 let mut gpu_permuted_input_coset = crate::DeviceMemPool::allocate::<F>(domain.extended_len()); 
                 crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &lookup.permuted_input_poly.values);
                 crate::gpu_coeff_to_extended(&mut gpu_permuted_input_coset,&gpu_poly, &g_coset_value, &g_coset_inv_value);        
-                //crate::DeviceMemPool::mem_copy_dtoh(&mut permuted_input_coset.values, &gpu_permuted_input_coset); 
                 crate::DeviceMemPool::deallocate(gpu_poly);
-                //crate::DeviceMemPool::deallocate(gpu_permuted_input_coset);
 
-                //
-
-                //let mut permuted_table_coset = B::empty(domain);
                 let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(lookup.permuted_table_poly.values.len()); 
                 let mut gpu_permuted_table_coset = crate::DeviceMemPool::allocate::<F>(domain.extended_len()); 
                 crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &lookup.permuted_table_poly.values);
                 crate::gpu_coeff_to_extended(&mut gpu_permuted_table_coset,&gpu_poly, &g_coset_value, &g_coset_inv_value);        
-                //crate::DeviceMemPool::mem_copy_dtoh(&mut permuted_table_coset.values, &gpu_permuted_table_coset); 
                 crate::DeviceMemPool::deallocate(gpu_poly);
-                //crate::DeviceMemPool::deallocate(gpu_permuted_table_coset);
  
                 ///////////////////////////
                 
@@ -752,75 +623,13 @@ impl<F: WithSmallOrderMulGroup<3>> Evaluator<F> {
                 let mut gpu_l_active_row = crate::DeviceMemPool::allocate::<F>(l_active_row.values.len()); 
                 crate::DeviceMemPool::mem_copy_htod(&mut gpu_l_active_row, &l_active_row.values);
 
+                // Lookup constraints
                 crate::lookups_evaluation_r(&ffi_structs_lookups, &fixed_poly_ptr, &advice_poly_ptr, &instance_poly_ptr,
                 &gpu_l0, &gpu_l_last, &gpu_l_active_row, &mut gpu_value, 
                 &gpu_product_coset, &gpu_permuted_input_coset ,& gpu_permuted_table_coset,
                 &challenges, &beta,
                 &gamma, &theta, &trash_challenge, &y,&self.lookups[n].constants, &rotation_rot_lookups,
                  &rot_scale, &isize);
-            
-                /*
-                // Lookup constraints
-                parallelize(&mut values, |values, start| {
-                    let lookup_evaluator = &self.lookups[n];
-                    let mut eval_data = lookup_evaluator.instance();
-                    for (i, value) in values.iter_mut().enumerate() {
-                        let idx = start + i;
-
-                        let table_value = lookup_evaluator.evaluate(
-                            &mut eval_data,
-                            fixed,
-                            advice,
-                            instance,
-                            challenges,
-                            &beta,
-                            &gamma,
-                            &theta,
-                            &trash_challenge,
-                            &y,
-                            &F::ZERO,
-                            idx,
-                            rot_scale,
-                            isize,
-                        );
-
-                        let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
-                        let r_prev = get_rotation_idx(idx, -1, rot_scale, isize);
-
-                        let a_minus_s = permuted_input_coset[idx] - permuted_table_coset[idx];
-                        // l_0(X) * (1 - z(X)) = 0
-                        *value = *value * y + ((one - product_coset[idx]) * l0[idx]);
-                        // l_last(X) * (z(X)^2 - z(X)) = 0
-                        *value = *value * y
-                            + ((product_coset[idx] * product_coset[idx] - product_coset[idx])
-                                * l_last[idx]);
-                        // (1 - (l_last(X) + l_blind(X))) * (
-                        //   z(\omega X) (a'(X) + \beta) (s'(X) + \gamma)
-                        //   - z(X) (\theta^{m-1} a_0(X) + ... + a_{m-1}(X) + \beta) (\theta^{m-1}
-                        //     s_0(X) + ... + s_{m-1}(X) + \gamma)
-                        // ) = 0
-                        *value = *value * y
-                            + ((product_coset[r_next]
-                                * (permuted_input_coset[idx] + beta)
-                                * (permuted_table_coset[idx] + gamma)
-                                - product_coset[idx] * table_value)
-                                * l_active_row[idx]);
-                        // Check that the first values in the permuted input expression and permuted
-                        // fixed expression are the same.
-                        // l_0(X) * (a'(X) - s'(X)) = 0
-                        *value = *value * y + (a_minus_s * l0[idx]);
-                        // Check that each value in the permuted lookup input expression is either
-                        // equal to the value above it, or the value at the same index in the
-                        // permuted table expression.
-                        // (1 - (l_last + l_blind)) * (a′(X) − s′(X))⋅(a′(X) − a′(\omega^{-1} X)) =
-                        // 0
-                        *value = *value * y
-                            + (a_minus_s
-                                * (permuted_input_coset[idx] - permuted_input_coset[r_prev])
-                                * l_active_row[idx]);
-                    }
-                });
-                */
             }
 
             crate::DeviceMemPool::mem_copy_dtoh(&mut values.values, &gpu_value); 

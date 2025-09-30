@@ -21,6 +21,7 @@ use midnight_proofs::{
 use rand::{rngs::OsRng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use sha2::Digest;
+use std::time::Instant;
 
 type F = midnight_curves::Fq;
 
@@ -85,10 +86,13 @@ fn main() {
     let witness: [u8; 24] = core::array::from_fn(|_| rng.gen());
     let instance = sha2::Sha256::digest(witness).into();
 
+    let start = Instant::now();
     let proof = compact_std_lib::prove::<ShaPreImageCircuit, blake2b_simd::State>(
         &srs, &pk, &relation, &instance, witness, OsRng,
     )
     .expect("Proof generation should not fail");
+    let duration = start.elapsed();
+    println!("Prove time: {:.2} second", duration.as_secs_f64());
 
     assert!(
         compact_std_lib::verify::<ShaPreImageCircuit, blake2b_simd::State>(
