@@ -825,7 +825,18 @@ where
         // Evaluate polynomials at omega^i x
         for &(column, at) in meta.instance_queries.iter() {
             if column.index() < nb_committed_instances {
-                let eval = eval_polynomial(&instance[column.index()], domain.rotate_omega(x, at));
+                // let eval = eval_polynomial(&instance[column.index()], domain.rotate_omega(x, at));
+                let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(instance[column.index()].len());
+                crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &instance[column.index()]);
+                let mut gpu_eval_res = crate::DeviceMemPool::allocate::<F>(1); 
+                let x = domain.rotate_omega(x, at);
+                crate::gpu_eval_polynomial(&gpu_poly, &x, &mut gpu_eval_res);
+                let mut eval_values = [F::ZERO; 1];
+                crate::DeviceMemPool::mem_copy_dtoh(&mut eval_values, &gpu_eval_res);
+                crate::DeviceMemPool::deallocate(gpu_poly);
+                crate::DeviceMemPool::deallocate(gpu_eval_res);
+                let eval = eval_values[0];
+
                 transcript.write(&eval)?;
             }
         }
@@ -838,7 +849,17 @@ where
             .advice_queries
             .iter()
             .map(|&(column, at)| {
-                eval_polynomial(&advice[column.index()], domain.rotate_omega(x, at))
+                let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(advice[column.index()].len());
+                crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &advice[column.index()]);
+                let mut gpu_eval_res = crate::DeviceMemPool::allocate::<F>(1); 
+                let x = domain.rotate_omega(x, at);
+                crate::gpu_eval_polynomial(&gpu_poly, &x, &mut gpu_eval_res);
+                let mut eval_values = [F::ZERO; 1];
+                crate::DeviceMemPool::mem_copy_dtoh(&mut eval_values, &gpu_eval_res);
+                crate::DeviceMemPool::deallocate(gpu_poly);
+                crate::DeviceMemPool::deallocate(gpu_eval_res);
+                let eval = eval_values[0];
+                eval
             })
             .collect();
 
@@ -853,7 +874,18 @@ where
         .fixed_queries
         .iter()
         .map(|&(column, at)| {
-            eval_polynomial(&pk.fixed_polys[column.index()], domain.rotate_omega(x, at))
+            // eval_polynomial(&pk.fixed_polys[column.index()], domain.rotate_omega(x, at))
+            let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(pk.fixed_polys[column.index()].len()); 
+            crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &pk.fixed_polys[column.index()]); 
+            let mut gpu_eval_res = crate::DeviceMemPool::allocate::<F>(1); 
+            let x = domain.rotate_omega(x, at);
+            crate::gpu_eval_polynomial(&gpu_poly, &x, &mut gpu_eval_res);
+            let mut eval_values = [F::ZERO; 1];
+            crate::DeviceMemPool::mem_copy_dtoh(&mut eval_values, &gpu_eval_res);
+            crate::DeviceMemPool::deallocate(gpu_poly);
+            crate::DeviceMemPool::deallocate(gpu_eval_res);
+            let eval = eval_values[0];
+            eval
         })
         .collect();
 

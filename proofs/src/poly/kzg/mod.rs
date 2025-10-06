@@ -139,42 +139,84 @@ where
             q_polys[com_data.set_index].push(com_data.commitment.poly.clone());
         }
 
+        let q_poly_num = q_polys.len();
+        let poly_size = q_polys[0][0].values.len();
+        let mut gpu_poly_arr = crate::DeviceMemPool::allocate::<E::Fr>(poly_size*(q_poly_num + 1));
+
+
         let q_polys = q_polys
             .iter()
-            .map(|polys| {
-                #[cfg(feature = "truncated-challenges")]
-                let x1 = truncated_powers(x1);
+            .enumerate()
+            .map(|(index, polys)| {
+                let poly_num = polys.len();
+                let mut gpu_poly_arr_temp = crate::DeviceMemPool::allocate::<E::Fr>(poly_size*poly_num);
 
-                #[cfg(not(feature = "truncated-challenges"))]
-                let x1 = powers(x1);
+                for (i, p) in polys.iter().enumerate() {
+                    let offset = i * poly_size;
+                    crate::DeviceMemPool::mem_copy_htod_with_offset(&mut gpu_poly_arr_temp, &p.values, offset, poly_size);
+                }
 
-                inner_product(polys, x1)
+                let offset = index * poly_size;
+                let offset_bytes = (offset * gpu_poly_arr.elem_size) as u64;
+                let mut gpu_q_poly = crate::GpuVec {
+                        addr: gpu_poly_arr.addr + offset_bytes,
+                        size_bytes: poly_size * gpu_poly_arr.elem_size,
+                        elem_size: gpu_poly_arr.elem_size,
+                    };
+
+                crate::gpu_inner_product(&gpu_poly_arr_temp, &x1, &mut gpu_q_poly, poly_num);
+                let mut poly_values = Vec::<E::Fr>::with_capacity(gpu_q_poly.len());
+                #[allow(unsafe_code)]
+                unsafe {
+                    poly_values.set_len(gpu_q_poly.len());
+                }
+                crate::DeviceMemPool::mem_copy_dtoh(&mut poly_values, &gpu_q_poly);
+                crate::DeviceMemPool::deallocate(gpu_poly_arr_temp);
+                let poly: Polynomial<<E as Engine>::Fr, Coeff>
+                    = Polynomial {
+                        values: poly_values,
+                        _marker: PhantomData,//::<Coeff>,
+                    };
+                poly
             })
             .collect::<Vec<_>>();
 
-        let f_poly = {
-            let f_polys = point_sets
-                .iter()
-                .zip(q_polys.clone())
-                .map(|(points, q_poly)| {
-                    let mut poly = points.iter().fold(q_poly.clone().values, |poly, point| {
-                        kate_division(&poly, *point)
-                    });
-                    poly.resize(1 << params.max_k() as usize, E::Fr::ZERO);
-                    Polynomial {
-                        values: poly,
-                        _marker: PhantomData,
-                    }
-                })
-                .collect::<Vec<_>>();
-            inner_product(&f_polys, powers(x2))
-        };
+        let offset = q_poly_num * poly_size;
+        let offset_bytes = (offset * gpu_poly_arr.elem_size) as u64;
+        let mut gpu_f_poly = crate::GpuVec {
+                addr: gpu_poly_arr.addr + offset_bytes,
+                size_bytes: poly_size * gpu_poly_arr.elem_size,
+                elem_size: gpu_poly_arr.elem_size,
+            };
 
-        //let f_com = Self::commit(params, &f_poly);
-        let mut poly_gpu = crate::DeviceMemPool::allocate::<E::Fr>(f_poly.len()); 
-        crate::DeviceMemPool::mem_copy_htod(&mut poly_gpu, &f_poly.values);     
-        let f_com = Self::commit_gpu(params, &poly_gpu);
-        crate::DeviceMemPool::deallocate(poly_gpu);
+        let f_polys = point_sets
+            .iter()
+            .zip(q_polys.clone())
+            .map(|(points, q_poly)| {
+                let mut poly = points.iter().fold(q_poly.clone().values, |poly, point| {
+                    kate_division(&poly, *point)
+                });
+                poly.resize(1 << params.max_k() as usize, E::Fr::ZERO);
+                Polynomial {
+                    values: poly,
+                    _marker: PhantomData::<Coeff>,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let f_poly_num = f_polys.len();
+        let mut gpu_f_polys = crate::DeviceMemPool::allocate::<E::Fr>(poly_size*f_poly_num);
+        for (i, p) in f_polys.iter().enumerate() {
+            let offset = i * poly_size;
+            crate::DeviceMemPool::mem_copy_htod_with_offset(&mut gpu_f_polys, &p.values, offset, poly_size);
+        }
+        crate::gpu_inner_product(&gpu_f_polys, &x2, &mut gpu_f_poly, f_poly_num);
+
+
+        let mut gpu_f_poly_cp = crate::DeviceMemPool::allocate::<E::Fr>(poly_size); 
+        crate::DeviceMemPool::mem_copy_dtod(&mut gpu_f_poly_cp, &gpu_f_poly);
+        let f_com = Self::commit_gpu(params, &gpu_f_poly_cp);
+        crate::DeviceMemPool::deallocate(gpu_f_poly_cp);
 
         transcript.write(&f_com).map_err(|_| Error::OpeningError)?;
 
@@ -182,26 +224,60 @@ where
         #[cfg(feature = "truncated-challenges")]
         let x3 = truncate(x3);
 
-        for q_poly in q_polys.iter() {
+        for i in 0..q_poly_num {
+            // Create a view into gpu_poly_arr for this polynomial
+            let offset_bytes = (i * poly_size * gpu_poly_arr.elem_size) as u64;
+            let gpu_poly = crate::GpuVec {
+                addr: gpu_poly_arr.addr + offset_bytes,
+                size_bytes: poly_size * gpu_poly_arr.elem_size,
+                elem_size: gpu_poly_arr.elem_size,
+            };
+            let mut gpu_eval_res = crate::DeviceMemPool::allocate::<E::Fr>(1); 
+            crate::gpu_eval_polynomial(&gpu_poly, &x3, &mut gpu_eval_res);
+            let mut eval_values = [E::Fr::ZERO; 1];
+            crate::DeviceMemPool::mem_copy_dtoh(&mut eval_values, &gpu_eval_res);
+            crate::DeviceMemPool::deallocate(gpu_eval_res);
+            let eval = eval_values[0];
             transcript
-                .write(&eval_polynomial(&q_poly.values, x3))
+                .write(&eval)
                 .map_err(|_| Error::OpeningError)?;
         }
 
         let x4: E::Fr = transcript.squeeze_challenge();
 
-        let final_poly = {
-            let mut polys = q_polys;
-            polys.push(f_poly);
+        let (final_poly, gpu_poly) = {
             #[cfg(feature = "truncated-challenges")]
-            let powers = truncated_powers(x4);
+            panic!("GPU evaluation does not support truncated-challenges feature");
 
-            #[cfg(not(feature = "truncated-challenges"))]
-            let powers = powers(x4);
-
-            inner_product(&polys, powers)
+            // let mut gpu_powers = crate::DeviceMemPool::allocate::<E::Fr>(powers.len());
+            let mut gpu_poly_out = crate::DeviceMemPool::allocate::<E::Fr>(poly_size); 
+            crate::gpu_inner_product(&gpu_poly_arr, &x4, &mut gpu_poly_out, (q_poly_num + 1));
+            let mut poly_values = Vec::<E::Fr>::with_capacity(gpu_poly_out.len());
+            #[allow(unsafe_code)]
+            unsafe {
+                poly_values.set_len(gpu_poly_out.len());
+            }            
+            crate::DeviceMemPool::mem_copy_dtoh(&mut poly_values, &gpu_poly_out);
+            let poly_: Polynomial<<E as Engine>::Fr, Coeff>
+                = Polynomial {
+                    values: poly_values,
+                    _marker: PhantomData,
+                };
+            (poly_, gpu_poly_out)
         };
-        let v = eval_polynomial(&final_poly, x3);
+
+
+        let mut gpu_eval_res = crate::DeviceMemPool::allocate::<E::Fr>(1); 
+        crate::gpu_eval_polynomial(&gpu_poly, &x3, &mut gpu_eval_res);
+        let mut eval_values = [E::Fr::ZERO; 1];
+        crate::DeviceMemPool::mem_copy_dtoh(&mut eval_values, &gpu_eval_res);
+
+        crate::DeviceMemPool::deallocate(gpu_f_polys);
+        crate::DeviceMemPool::deallocate(gpu_poly_arr);
+        crate::DeviceMemPool::deallocate(gpu_poly);
+        crate::DeviceMemPool::deallocate(gpu_eval_res);
+        
+        let v = eval_values[0];
 
         let pi = {
             let pi_poly = Polynomial {
