@@ -10,6 +10,8 @@ use halo2curves::fft::best_fft;
 use super::{Coeff, ExtendedLagrangeCoeff, LagrangeCoeff, Polynomial, Rotation};
 use crate::utils::{arithmetic::parallelize, rational::Rational};
 
+use sppark::NTTInputOutputOrder;
+
 /// This structure contains precomputed constants and other details needed for
 /// performing operations on an evaluation domain of size $2^k$ and an extended
 /// domain of size $2^{k} * j$ with $j \neq 0$.
@@ -337,6 +339,35 @@ impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
             values: a.values,
             _marker: PhantomData,
         }
+    }
+
+
+    pub fn divide_by_vanishing_poly_gpu(
+        &self,
+        mut a: &crate::GpuVec,
+    ) {
+        assert_eq!(a.len(), self.extended_len());
+
+        // Create output vector for the result
+        // Call the GPU function that provides output in the array
+        crate::gpu_divide_by_vanishing_poly_ptr(
+            a,
+            self.t_evaluations.as_slice(),
+            self.t_evaluations.len() - 1
+        );
+    }
+
+
+    pub fn extended_to_coeff_gpu(&self, a: &mut crate::GpuVec) {
+        assert_eq!(a.len(), self.extended_len());
+
+        crate::intt_gpu_ptr(0, a, NTTInputOutputOrder::NN);
+
+        crate::gpu_mul_zetas_ptr(a, self.g_coset, self.g_coset_inv);
+
+        // TODO: we need a resize here
+
+        a.size_bytes = ((self.n * self.quotient_poly_degree) as usize) * a.elem_size;
     }
 
     /// Given a slice of group elements `[a_0, a_1, a_2, ...]`, this returns
