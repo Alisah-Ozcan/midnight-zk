@@ -13,6 +13,7 @@ use crate::{
 #[derive(Debug)]
 pub struct ProverTrace<F: PrimeField> {
     pub(crate) advice_polys: Vec<Vec<Polynomial<F, Coeff>>>,
+    pub(crate) advice_polys_gpu:  Vec<Vec<crate::GpuVec>>,
     pub(crate) instance_polys: Vec<Vec<Polynomial<F, Coeff>>>,
     #[allow(dead_code)]
     // This field will be useful for split accumulation

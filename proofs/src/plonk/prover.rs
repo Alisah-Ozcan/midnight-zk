@@ -29,7 +29,7 @@ use crate::{
         ExtendedLagrangeCoeff, LagrangeCoeff, Polynomial, PolynomialRepresentation, ProverQuery,
     },
     transcript::{Hashable, Sampleable, Transcript},
-    utils::{arithmetic::eval_polynomial, rational::Rational},
+    utils::{arithmetic::eval_polynomial, rational::Rational}, GpuVec,
 };
 
 #[cfg(feature = "committed-instances")]
@@ -233,8 +233,8 @@ where
     let (instance_polys, instance_values) =
         instance.into_iter().map(|i| (i.instance_polys, i.instance_values)).unzip();
 
-    let advice_polys = bench_and_run!(_group; ; own advice ; "Advice to coeff";
-        |advice: Vec<AdviceSingle<F, LagrangeCoeff>>| advice
+
+    let advice_polys_gpu = advice
         .into_iter()
             .map(|a| {
                 a.advice_polys
@@ -242,20 +242,40 @@ where
                     //.map(|p| domain.lagrange_to_coeff(p))
                     .map(|p|
                     { 
-                        let mut lagrange_vec = domain.empty_coeff();
+                        // let mut lagrange_vec = domain.empty_coeff();
                         let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(p.values.len()); 
                         crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &p.values);
-                        crate::gpu_lagrange_to_coeff::<F>(&mut gpu_poly);        
-                        crate::DeviceMemPool::mem_copy_dtoh(&mut lagrange_vec.values, &gpu_poly); 
-                        crate::DeviceMemPool::deallocate(gpu_poly);
-                        lagrange_vec
+                        // crate::gpu_lagrange_to_coeff::<F>(&mut gpu_poly);        
+                        // crate::DeviceMemPool::mem_copy_dtoh(&mut lagrange_vec.values, &gpu_poly); 
+                        // crate::DeviceMemPool::deallocate(gpu_poly);
+                        gpu_poly
                     })
                     .collect()
             })
-            .collect::<Vec<_>>());
+            .collect::<Vec<Vec<crate::GpuVec>>>();
+
+    let advice_polys: Vec<Vec<Polynomial<F, Coeff>>> = advice_polys_gpu
+        .clone()
+        .into_iter()
+        .map(|circuit_polys| {
+            circuit_polys
+                .into_iter()
+                .map(|mut gpu_poly| {
+                    // Perform Lagrange to coefficient conversion on GPU
+                    crate::gpu_lagrange_to_coeff::<F>(&mut gpu_poly);
+                    let mut lagrange_vec = domain.empty_coeff();
+                    crate::DeviceMemPool::mem_copy_dtoh(&mut lagrange_vec.values, &gpu_poly); 
+                    // crate::DeviceMemPool::deallocate(gpu_poly);
+                    lagrange_vec
+                })
+                .collect()
+        })
+        .collect();
+
 
     Ok(ProverTrace {
         advice_polys,
+        advice_polys_gpu,
         instance_polys,
         instance_values,
         vanishing,
@@ -305,6 +325,7 @@ where
 
     let ProverTrace {
         advice_polys,
+        advice_polys_gpu,   
         instance_polys,
         lookups,
         trashcans,
@@ -663,6 +684,7 @@ where
 {
     let ProverTrace {
         advice_polys,
+        advice_polys_gpu,
         instance_polys,
         lookups,
         trashcans,
@@ -682,20 +704,20 @@ where
     let g_coset_inv_value: F = g_coset_value.square(); 
     
     // Calculate the advice and instance cosets
-    let advice_cosets: Vec<Vec<Polynomial<F, ExtendedLagrangeCoeff>>> = advice_polys
+    let advice_cosets: Vec<Vec<Polynomial<F, ExtendedLagrangeCoeff>>> = advice_polys_gpu
         .iter()
         .map(|advice_polys| {
             advice_polys
                 .iter()
-                .map(|poly| 
+                .map(|gpu_poly: &GpuVec| 
                 {
                     let mut values_in = domain.empty_extended();
-                    let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(poly.values.len()); 
+                    // let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(poly.values.len()); 
                     let mut gpu_poly_extended = crate::DeviceMemPool::allocate::<F>(domain.extended_len()); 
-                    crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &poly.values);
+                    // crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &poly.values);
                     crate::gpu_coeff_to_extended(&mut gpu_poly_extended,&gpu_poly, &g_coset_value, &g_coset_inv_value);        
                     crate::DeviceMemPool::mem_copy_dtoh(&mut values_in.values, &gpu_poly_extended); 
-                    crate::DeviceMemPool::deallocate(gpu_poly);
+                    crate::DeviceMemPool::deallocate(*gpu_poly);
                     crate::DeviceMemPool::deallocate(gpu_poly_extended);
                     values_in
                 }                  
@@ -786,6 +808,7 @@ where
     }
 
     // Compute and hash advice evals for each circuit instance
+    println!("Writing advice evals to transcript... {:?} . {:?} . {:?}", advice_polys.len(), advice_polys[0].len(), advice_polys[0][0].len());
     for advice in advice_polys.iter() {
         // Evaluate polynomials at omega^i x
         let advice_evals: Vec<_> = meta
