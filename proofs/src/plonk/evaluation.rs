@@ -5,7 +5,7 @@ use super::{ConstraintSystem, Expression};
 use crate::{
     plonk::{lookup, permutation, trash, Any},
     poly::{EvaluationDomain, Polynomial, PolynomialRepresentation, Rotation},
-    utils::arithmetic::parallelize,
+    utils::arithmetic::parallelize, GpuVec,
 };
 
 /// Return the index in the polynomial of size `isize` after rotation `rot`.
@@ -443,7 +443,9 @@ impl<F: WithSmallOrderMulGroup<3>> Evaluator<F> {
         domain: &EvaluationDomain<F>,
         cs: &ConstraintSystem<F>,
         advice: &[&[Polynomial<F, B>]],
+        advice_gpu: &[&[GpuVec]],
         instance: &[&[Polynomial<F, B>]],
+        instance_gpu: &[&[GpuVec]],
         fixed: &[Polynomial<F, B>],
         challenges: &[F],
         y: F,
@@ -473,9 +475,11 @@ impl<F: WithSmallOrderMulGroup<3>> Evaluator<F> {
         let mut values = B::empty(domain);
 
         // Core expression evaluations
-        for ((((advice, instance), lookups), trashcans), permutation) in advice
+        for ((((((advice, advice_gpu), instance), instance_gpu), lookups), trashcans), permutation) in advice
             .iter()
+            .zip(advice_gpu.iter())
             .zip(instance.iter())
+            .zip(instance_gpu.iter())
             .zip(lookups.iter())
             .zip(trashcans.iter())
             .zip(permutations.iter())
@@ -489,20 +493,16 @@ impl<F: WithSmallOrderMulGroup<3>> Evaluator<F> {
 
             let rotation_rot: Vec<i32> = self.custom_gates.rotations.iter().map(|rot| *rot).collect();
 
-            let advice_gpu_vec: Vec<crate::GpuVec> = advice.iter().map(|poly|
+            let advice_gpu_vec: Vec<crate::GpuVec>= advice_gpu.iter().map(|gpu_poly|
             {
-                let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(poly.values.len()); 
-                crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &poly.values);
-                gpu_poly
+                *gpu_poly
             } ).collect();
 
             let advice_poly_ptr: Vec<u64> = advice_gpu_vec.iter().map(|gpu_vec| gpu_vec.addr ).collect();
 
-            let instance_gpu_vec: Vec<crate::GpuVec>= instance.iter().map(|poly|
+            let instance_gpu_vec: Vec<crate::GpuVec>= instance_gpu.iter().map(|gpu_poly|
             {
-                let mut gpu_poly = crate::DeviceMemPool::allocate::<F>(poly.values.len()); 
-                crate::DeviceMemPool::mem_copy_htod(&mut gpu_poly, &poly.values);
-                gpu_poly
+                *gpu_poly
             } ).collect();
 
             let instance_poly_ptr: Vec<u64> = instance_gpu_vec.iter().map(|gpu_vec| gpu_vec.addr ).collect();

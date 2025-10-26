@@ -16,6 +16,7 @@ pub struct ProverTrace<F: PrimeField> {
     pub(crate) advice_polys_gpu:  Vec<Vec<crate::GpuVec>>,
     pub(crate) instance_polys: Vec<Vec<Polynomial<F, Coeff>>>,
     #[allow(dead_code)]
+    pub(crate) instance_polys_gpu: Vec<Vec<crate::GpuVec>>,
     // This field will be useful for split accumulation
     pub(crate) instance_values: Vec<Vec<Polynomial<F, LagrangeCoeff>>>,
     pub(crate) vanishing: vanishing::prover::Committed<F>,
