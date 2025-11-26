@@ -103,6 +103,7 @@ derive_serde = ["halo2curves/derive_serde"]
 nvcc_sm_80 = []
 nvcc_sm_86 = []
 nvcc_sm_90 = []
+nvcc_sm_120 = []
 
 # This feature truncates challenges to half the size of the scalar field.
 truncated-challenges = []

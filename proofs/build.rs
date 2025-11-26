@@ -6,12 +6,23 @@ use std::{
 };
 
 #[cfg(any(
+    all(feature = "nvcc_sm_90", feature = "nvcc_sm_80"),
+    all(feature = "nvcc_sm_90", feature = "nvcc_sm_86"),
+    all(feature = "nvcc_sm_90", feature = "nvcc_sm_120"),
+    all(feature = "nvcc_sm_120", feature = "nvcc_sm_80"),
+    all(feature = "nvcc_sm_120", feature = "nvcc_sm_90"),
+    all(feature = "nvcc_sm_120", feature = "nvcc_sm_86"),
     all(feature = "nvcc_sm_86", feature = "nvcc_sm_80"),
     all(feature = "nvcc_sm_86", feature = "nvcc_sm_90"),
-    all(feature = "nvcc_sm_80", feature = "nvcc_sm_90")
+    all(feature = "nvcc_sm_86", feature = "nvcc_sm_120"),
+    all(feature = "nvcc_sm_80", feature = "nvcc_sm_90"),
+    all(feature = "nvcc_sm_80", feature = "nvcc_sm_120"),
+    all(feature = "nvcc_sm_90", feature = "nvcc_sm_120"),
 ))]
-compile_error!("Please select only one feature: nvcc_sm_86, nvcc_sm_80, or nvcc_sm_90.");
+compile_error!("Please select only one feature: nvcc_sm_86, nvcc_sm_80, nvcc_sm_90, or nvcc_sm_120.");
 
+#[cfg(feature = "nvcc_sm_120")]
+const NVCC_CONFIG: (&str, &str) = ("sm_120", "arch=compute_120,code=sm_120");
 #[cfg(feature = "nvcc_sm_80")]
 const NVCC_CONFIG: (&str, &str) = ("sm_80", "arch=compute_80,code=sm_80");
 #[cfg(feature = "nvcc_sm_86")]

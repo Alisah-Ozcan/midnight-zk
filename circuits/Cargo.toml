@@ -17,8 +17,7 @@ midnight-proofs = { path = "../proofs", version = "0.5.1", default-features = fa
     "bits",
     "cost-estimator",
     "circuit-params",
-    "committed-instances",
-    "nvcc_sm_80",
+    "committed-instances"
 ] }
 bench_macros = { path = "../bench-macros" }
 
@@ -58,6 +57,10 @@ testing = ["num-bigint/rand"]
 heap_profiling = []
 # Enable truncated challenges. This makes recursive proofs more efficient
 truncated-challenges = ["midnight-proofs/truncated-challenges"]
+nvcc_sm_80 = ["midnight-proofs/nvcc_sm_80"]
+nvcc_sm_86 = ["midnight-proofs/nvcc_sm_86"]
+nvcc_sm_90 = ["midnight-proofs/nvcc_sm_90"]
+nvcc_sm_120 = ["midnight-proofs/nvcc_sm_120"]
 
 # Feature to enable granular benchmarks in the prover. If enabled,
 # the proof generation functions take an additional input,
